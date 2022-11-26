@@ -2,6 +2,7 @@ package org.example;
 
 import jakarta.enterprise.context.Dependent;
 import jakarta.enterprise.context.spi.CreationalContext;
+import jakarta.enterprise.inject.Default;
 import jakarta.enterprise.inject.spi.*;
 import jakarta.enterprise.inject.spi.configurator.AnnotatedFieldConfigurator;
 import jakarta.enterprise.inject.spi.configurator.AnnotatedTypeConfigurator;
@@ -10,7 +11,8 @@ import org.eclipse.microprofile.config.inject.ConfigProperties;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import java.lang.annotation.Annotation;
-import java.util.HashSet;
+import java.lang.reflect.Member;
+import java.lang.reflect.Type;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -26,46 +28,31 @@ import java.util.concurrent.ConcurrentHashMap;
 public class DynamicInjectionTarget<T> implements InjectionTarget<T> {
     private final BeanManager beanManager;
     private final AnnotatedType<T> annotatedType;
-    private final Bean<T> bean;
-    private final InjectionPoint injectionPointInjectionPoint; // the synthetic injection point of type InjectionPoint
+    private Bean<T> bean;
+    private InjectionPoint injectionPointInjectionPoint; // the synthetic injection point of type InjectionPoint
     /**
      * Maps the value of {@link ConfigProperties#prefix()} at the injection point to the appropriate
      * {@link InjectionTarget} whose injection points are all configured to that particular prefix.
      */
     private final Map<String, InjectionTarget<T>> injectionTargets;
-    private final Set<InjectionPoint> allInjectionPoints;
 
-    public DynamicInjectionTarget(BeanManager beanManager, Bean<T> bean, AnnotatedType<T> annotatedType) {
+    public DynamicInjectionTarget(BeanManager beanManager, AnnotatedType<T> annotatedType) {
         this.beanManager = beanManager;
         this.annotatedType = annotatedType;
-        this.bean = bean;
+
+        this.injectionTargets = new ConcurrentHashMap<>();
+    }
+
+    void setBean(Bean<T> bean) {
         if (bean.getScope() != Dependent.class) {
             throw new IllegalArgumentException(
                     "DynamicInjectionTarget can only be created for beans that are not @Dependent scoped");
         }
+        this.bean = bean;
 
-        this.injectionTargets = new ConcurrentHashMap<>();
         prepareInjectionTargetWithoutPrefix();
 
-
-        this.injectionPointInjectionPoint = createSpecialInjectionPoint(bean);
-        // cannot use bean.getInjectionPoints, because the bean will get its injection points from this.
-        // Therefore, we delegate to the no-prefix InjectionTarget instead.
-        Set<InjectionPoint> originalInjectionPoints = getInjectionTargetWithoutPrefix().getInjectionPoints();
-        Set<InjectionPoint> allInjectionPoints = new HashSet<>(originalInjectionPoints);
-        allInjectionPoints.add(injectionPointInjectionPoint);
-        this.allInjectionPoints = Set.copyOf(allInjectionPoints);
-    }
-
-    private InjectionPointInjectionPoint createSpecialInjectionPoint(Bean<T> bean) {
-        final AnnotatedField<? super DynamicInjectionTarget<T>> annotatedField = beanManager.createAnnotatedType(
-                        DynamicInjectionTarget.class)
-                .getFields()
-                .stream()
-                .filter(f -> f.getBaseType() == InjectionPoint.class)
-                .findAny()
-                .orElseThrow();
-        return new InjectionPointInjectionPoint(bean, annotatedField);
+        this.injectionPointInjectionPoint = new InjectionPointInjectionPoint();
     }
 
     private void prepareInjectionTargetWithoutPrefix() {
@@ -111,7 +98,7 @@ public class DynamicInjectionTarget<T> implements InjectionTarget<T> {
      */
     @Override
     public Set<InjectionPoint> getInjectionPoints() {
-        return allInjectionPoints;
+        return getInjectionTargetWithoutPrefix().getInjectionPoints();
     }
 
     private InjectionTarget<T> getInjectionTargetWithoutPrefix() {
@@ -145,10 +132,8 @@ public class DynamicInjectionTarget<T> implements InjectionTarget<T> {
     private String getPrefix(CreationalContext<T> ctx) {
         final InjectionPoint injectionPoint = (InjectionPoint) beanManager.getInjectableReference(
                 injectionPointInjectionPoint, ctx);
-        final ConfigProperties configProperties = getConfigPropertiesQualifier(
-                injectionPoint.getQualifiers()).orElseThrow();
-
-        return configProperties.prefix();
+        return getConfigPropertiesQualifier(injectionPoint.getQualifiers()).map(ConfigProperties::prefix)
+                .orElse(ConfigProperties.UNCONFIGURED_PREFIX);
     }
 
     private Optional<ConfigProperties> getConfigPropertiesQualifier(final Set<Annotation> qualifiers) {
@@ -158,4 +143,54 @@ public class DynamicInjectionTarget<T> implements InjectionTarget<T> {
                 .findAny();
     }
 
+    /**
+     * A synthetic injection point of type {@link InjectionPoint} backed by a dummy field.
+     */
+    private class InjectionPointInjectionPoint implements InjectionPoint {
+        private final AnnotatedField<?> annotatedField;
+
+        public InjectionPointInjectionPoint() {
+            this.annotatedField = beanManager.createAnnotatedType(DynamicInjectionTarget.class)
+                    .getFields()
+                    .stream()
+                    .filter(f -> f.getBaseType() == InjectionPoint.class)
+                    .findAny()
+                    .orElseThrow();
+        }
+
+        @Override
+        public Type getType() {
+            return InjectionPoint.class;
+        }
+
+        @Override
+        public Set<Annotation> getQualifiers() {
+            return Set.of(Default.Literal.INSTANCE);
+        }
+
+        @Override
+        public Bean<?> getBean() {
+            return bean;
+        }
+
+        @Override
+        public Member getMember() {
+            return annotatedField.getJavaMember();
+        }
+
+        @Override
+        public Annotated getAnnotated() {
+            return annotatedField;
+        }
+
+        @Override
+        public boolean isDelegate() {
+            return false;
+        }
+
+        @Override
+        public boolean isTransient() {
+            return false;
+        }
+    }
 }

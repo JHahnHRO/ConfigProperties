@@ -8,8 +8,8 @@ import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperties;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Proof-of-concept implementation to show that @ConfigProperties can work on beans that do not have a no-args
@@ -36,39 +36,25 @@ public class ConfigPropertiesExtension implements Extension {
         }
     }
 
-    private List<BeanData<?>> beansToCreate = new ArrayList<>();
+    Map<AnnotatedType<?>, DynamicInjectionTarget<?>> injectionTargetMap = new HashMap<>();
 
-    static final class BeanData<T> {
-        private final BeanAttributes<T> beanAttributes;
-        private final Class<T> beanClass;
-        private final InjectionTargetFactory<T> injectionTargetFactory;
-
-        BeanData(BeanAttributes<T> beanAttributes, Class<T> beanClass,
-                 InjectionTargetFactory<T> injectionTargetFactory) {
-            this.beanAttributes = beanAttributes;
-            this.beanClass = beanClass;
-            this.injectionTargetFactory = injectionTargetFactory;
+    public <T> void onProcessInjectionTarget(@Observes ProcessInjectionTarget<T> pit, BeanManager beanManager) {
+        final AnnotatedType<T> annotatedType = pit.getAnnotatedType();
+        if (!annotatedType.isAnnotationPresent(ConfigProperties.class)) {
+            // bean not relevant
+            return;
         }
+
+        final DynamicInjectionTarget<T> injectionTarget = new DynamicInjectionTarget<>(beanManager, annotatedType);
+        injectionTargetMap.put(annotatedType, injectionTarget);
+        pit.setInjectionTarget(injectionTarget);
     }
 
-    public <T> void processBeanAttributes(@Observes ProcessBeanAttributes<T> pba, BeanManager beanManager) {
-        final Annotated annotated = pba.getAnnotated();
-        if (annotated instanceof AnnotatedType && annotated.isAnnotationPresent(ConfigProperties.class)) {
-            pba.veto();
-
-            AnnotatedType<T> annotatedType = (AnnotatedType<T>) annotated;
-
-            beansToCreate.add(new BeanData<>(pba.getBeanAttributes(), annotatedType.getJavaClass(),
-                                             new DynamicInjectionTargetFactory<>(beanManager, annotatedType)));
+    public <T> void onProcessBean(@Observes ProcessBean<T> pb) {
+        final DynamicInjectionTarget<T> dynamicInjectionTarget = (DynamicInjectionTarget<T>) injectionTargetMap.get(
+                pb.getAnnotated());
+        if (dynamicInjectionTarget != null) {
+            dynamicInjectionTarget.setBean(pb.getBean());
         }
-    }
-
-    public void addSyntheticBeans(@Observes AfterBeanDiscovery abd, BeanManager beanManager) {
-        beansToCreate.forEach(beanData -> abd.addBean(createSyntheticBean(beanManager, beanData)));
-        beansToCreate = null;
-    }
-
-    private <T> Bean<T> createSyntheticBean(BeanManager beanManager, BeanData<T> beanData) {
-        return beanManager.createBean(beanData.beanAttributes, beanData.beanClass, beanData.injectionTargetFactory);
     }
 }

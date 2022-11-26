@@ -1,6 +1,7 @@
 package org.example;
 
 import jakarta.enterprise.context.Dependent;
+import jakarta.enterprise.inject.Default;
 import jakarta.enterprise.inject.Produces;
 import jakarta.enterprise.inject.spi.BeanManager;
 import jakarta.enterprise.inject.spi.InjectionPoint;
@@ -23,7 +24,7 @@ class ConfigPropertiesExtensionTest {
     Weld weld = WeldInitiator.createWeld()
             .addExtension(new ConfigPropertiesExtension())
             .addBeanClass(ConfigPropertyProducer.class) // to produce @ConfigProperty String
-            .addBeanClasses(FooBean.class, BarBean.class);
+            .addBeanClasses(FooBean.class, BarBean.class, BazBean.class);
 
     @SuppressWarnings("unused")
     @WeldSetup
@@ -47,6 +48,12 @@ class ConfigPropertiesExtensionTest {
     @Test
     void testClassWithoutNoArgsConstructor(@ConfigProperties BarBean barWithoutPrefix) {
         assertThat(barWithoutPrefix.getBaz()).isEqualTo("bar.bazzz");
+    }
+
+    @Test
+    void testClassWithProducerMethod(@Default PairOfStrings pairOfStrings) {
+        assertThat(pairOfStrings.left).isEqualTo("baz.fizz");
+        assertThat(pairOfStrings.right).isEqualTo("baz.buzz");
     }
 
     @Singleton
@@ -102,6 +109,32 @@ class ConfigPropertiesExtensionTest {
 
         public String getBaz() {
             return baz;
+        }
+    }
+
+    @Dependent
+    @ConfigProperties(prefix = "baz")
+    static class BazBean {
+
+        private String fizz;
+        private String buzz;
+
+
+        @Produces
+        @Dependent
+        PairOfStrings fizzBuzz() {
+            return new PairOfStrings(fizz, buzz);
+        }
+    }
+
+    static class PairOfStrings {
+
+        final String left;
+        final String right;
+
+        PairOfStrings(String left, String right) {
+            this.left = left;
+            this.right = right;
         }
     }
 }

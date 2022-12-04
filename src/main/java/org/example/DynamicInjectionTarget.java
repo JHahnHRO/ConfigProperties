@@ -13,9 +13,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Member;
 import java.lang.reflect.Type;
-import java.util.Map;
-import java.util.Optional;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -28,19 +26,30 @@ import java.util.concurrent.ConcurrentHashMap;
 public class DynamicInjectionTarget<T> implements InjectionTarget<T> {
     private final BeanManager beanManager;
     private final AnnotatedType<T> annotatedType;
+    private final InjectionTarget<T> originalInjectionTarget;
+    private final InjectionPoint syntheticInjectionPoint; // the synthetic injection point of type InjectionPoint
+    private final Set<InjectionPoint> allInjectionPoints; // the original bean's injection points + the synthetic one
     private Bean<T> bean;
-    private InjectionPoint injectionPointInjectionPoint; // the synthetic injection point of type InjectionPoint
     /**
      * Maps the value of {@link ConfigProperties#prefix()} at the injection point to the appropriate
      * {@link InjectionTarget} whose injection points are all configured to that particular prefix.
      */
     private final Map<String, InjectionTarget<T>> injectionTargets;
 
-    public DynamicInjectionTarget(BeanManager beanManager, AnnotatedType<T> annotatedType) {
+    public DynamicInjectionTarget(BeanManager beanManager, AnnotatedType<T> annotatedType, InjectionTarget<T> originalInjectionTarget) {
         this.beanManager = beanManager;
         this.annotatedType = annotatedType;
+        this.originalInjectionTarget = originalInjectionTarget;
 
         this.injectionTargets = new ConcurrentHashMap<>();
+        this.syntheticInjectionPoint = new InjectionPointInjectionPoint();
+        this.allInjectionPoints = getAllInjectionPoints();
+    }
+
+    private Set<InjectionPoint> getAllInjectionPoints() {
+        Set<InjectionPoint> allInjectionPoints = new HashSet<>(originalInjectionTarget.getInjectionPoints());
+        allInjectionPoints.add(syntheticInjectionPoint);
+        return Collections.unmodifiableSet(allInjectionPoints);
     }
 
     void setBean(Bean<T> bean) {
@@ -52,7 +61,6 @@ public class DynamicInjectionTarget<T> implements InjectionTarget<T> {
 
         prepareInjectionTargetWithoutPrefix();
 
-        this.injectionPointInjectionPoint = new InjectionPointInjectionPoint();
     }
 
     private void prepareInjectionTargetWithoutPrefix() {
@@ -79,17 +87,17 @@ public class DynamicInjectionTarget<T> implements InjectionTarget<T> {
 
     @Override
     public void postConstruct(T instance) {
-        getInjectionTargetWithoutPrefix().postConstruct(instance);
+        originalInjectionTarget.postConstruct(instance);
     }
 
     @Override
     public void preDestroy(T instance) {
-        getInjectionTargetWithoutPrefix().preDestroy(instance);
+        originalInjectionTarget.preDestroy(instance);
     }
 
     @Override
     public void dispose(T instance) {
-        getInjectionTargetWithoutPrefix().dispose(instance);
+        originalInjectionTarget.dispose(instance);
     }
 
     /**
@@ -98,11 +106,7 @@ public class DynamicInjectionTarget<T> implements InjectionTarget<T> {
      */
     @Override
     public Set<InjectionPoint> getInjectionPoints() {
-        return getInjectionTargetWithoutPrefix().getInjectionPoints();
-    }
-
-    private InjectionTarget<T> getInjectionTargetWithoutPrefix() {
-        return injectionTargets.get(ConfigProperties.UNCONFIGURED_PREFIX);
+        return allInjectionPoints;
     }
 
     private InjectionTarget<T> getInjectionTargetForPrefix(String prefix) {
@@ -131,7 +135,7 @@ public class DynamicInjectionTarget<T> implements InjectionTarget<T> {
 
     private String getPrefix(CreationalContext<T> ctx) {
         final InjectionPoint injectionPoint = (InjectionPoint) beanManager.getInjectableReference(
-                injectionPointInjectionPoint, ctx);
+                syntheticInjectionPoint, ctx);
         return getConfigPropertiesQualifier(injectionPoint.getQualifiers()).map(ConfigProperties::prefix)
                 .orElse(ConfigProperties.UNCONFIGURED_PREFIX);
     }
@@ -147,15 +151,8 @@ public class DynamicInjectionTarget<T> implements InjectionTarget<T> {
      * A synthetic injection point of type {@link InjectionPoint} backed by a dummy field.
      */
     private class InjectionPointInjectionPoint implements InjectionPoint {
-        private final AnnotatedField<?> annotatedField;
 
         public InjectionPointInjectionPoint() {
-            this.annotatedField = beanManager.createAnnotatedType(DynamicInjectionTarget.class)
-                    .getFields()
-                    .stream()
-                    .filter(f -> f.getBaseType() == InjectionPoint.class)
-                    .findAny()
-                    .orElseThrow();
         }
 
         @Override
@@ -175,12 +172,42 @@ public class DynamicInjectionTarget<T> implements InjectionTarget<T> {
 
         @Override
         public Member getMember() {
-            return annotatedField.getJavaMember();
+            return null;
         }
 
         @Override
         public Annotated getAnnotated() {
-            return annotatedField;
+            return new Annotated() {
+                @Override
+                public Type getBaseType() {
+                    return InjectionPoint.class;
+                }
+
+                @Override
+                public Set<Type> getTypeClosure() {
+                    return Set.of(InjectionPoint.class, Object.class);
+                }
+
+                @Override
+                public <T extends Annotation> T getAnnotation(Class<T> aClass) {
+                    return null;
+                }
+
+                @Override
+                public <T extends Annotation> Set<T> getAnnotations(Class<T> aClass) {
+                    return Collections.emptySet();
+                }
+
+                @Override
+                public Set<Annotation> getAnnotations() {
+                    return Collections.emptySet();
+                }
+
+                @Override
+                public boolean isAnnotationPresent(Class<? extends Annotation> aClass) {
+                    return false;
+                }
+            };
         }
 
         @Override

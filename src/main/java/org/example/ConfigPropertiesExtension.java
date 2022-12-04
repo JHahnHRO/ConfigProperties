@@ -18,9 +18,9 @@ import java.util.Map;
 public class ConfigPropertiesExtension implements Extension {
 
     public <X> void onAnnotatedType(@Observes @WithAnnotations(ConfigProperties.class) ProcessAnnotatedType<X> pat) {
-        final ConfigProperties configProperties = pat.getAnnotatedType().getAnnotation(ConfigProperties.class);
-        if (configProperties == null) {
-            // annotation on some method, not on the type => not relevant
+
+        if (!pat.getAnnotatedType().isAnnotationPresent(ConfigProperties.class)) {
+            // annotation on some field or a method, not on the type => not relevant
             return;
         }
 
@@ -45,16 +45,21 @@ public class ConfigPropertiesExtension implements Extension {
             return;
         }
 
-        final DynamicInjectionTarget<T> injectionTarget = new DynamicInjectionTarget<>(beanManager, annotatedType);
+        final DynamicInjectionTarget<T> injectionTarget =
+                new DynamicInjectionTarget<>(beanManager, annotatedType, pit.getInjectionTarget());
         injectionTargetMap.put(annotatedType, injectionTarget);
         pit.setInjectionTarget(injectionTarget);
     }
 
     public <T> void onProcessBean(@Observes ProcessBean<T> pb) {
-        final DynamicInjectionTarget<T> dynamicInjectionTarget = (DynamicInjectionTarget<T>) injectionTargetMap.get(
-                pb.getAnnotated());
-        if (dynamicInjectionTarget != null) {
-            dynamicInjectionTarget.setBean(pb.getBean());
+        Annotated annotated = pb.getAnnotated();
+        if (annotated instanceof AnnotatedType) {
+            @SuppressWarnings("unchecked")
+            final DynamicInjectionTarget<T> dynamicInjectionTarget =
+                    (DynamicInjectionTarget<T>) injectionTargetMap.remove((AnnotatedType<?>) annotated);
+            if (dynamicInjectionTarget != null) {
+                dynamicInjectionTarget.setBean(pb.getBean());
+            }
         }
     }
 }
